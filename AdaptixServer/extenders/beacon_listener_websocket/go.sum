@@ -1,0 +1,4 @@
+github.com/Adaptix-Framework/axc2 v1.2.0 h1:WYEg502NTTtX1tQJUz2AaC2dmm/bS/1L1iOHOQ5kEYA=
+github.com/Adaptix-Framework/axc2 v1.2.0/go.mod h1:3oJyFeRVIql1RTsNa0meEqK3+P+6JTAMMjMdVyXhbaQ=
+github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=
+github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=

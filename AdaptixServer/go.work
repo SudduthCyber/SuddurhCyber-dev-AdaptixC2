@@ -5,8 +5,12 @@ use (
 	./extenders/beacon_agent
 	./extenders/beacon_listener_dns
 	./extenders/beacon_listener_http
+	./extenders/beacon_listener_quic
 	./extenders/beacon_listener_smb
 	./extenders/beacon_listener_tcp
+	./extenders/beacon_listener_udp
+	./extenders/beacon_listener_wasm
+	./extenders/beacon_listener_websocket
 	./extenders/gopher_agent
 	./extenders/gopher_listener_tcp
 )
