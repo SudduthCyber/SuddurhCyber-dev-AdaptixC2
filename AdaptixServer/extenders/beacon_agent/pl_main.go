@@ -290,6 +290,7 @@ type GenerateConfig struct {
 	ProxyUsername      string `json:"proxy_username"`
 	ProxyPassword      string `json:"proxy_password"`
 	RotationMode       string `json:"rotation_mode"`
+	Language           string `json:"language"`
 }
 
 var (
@@ -545,30 +546,10 @@ func (p *PluginAgent) BuildPayload(profile adaptix.BuildProfile, agentProfiles [
 		return nil, "", err
 	}
 
-	var (
-		generateConfig GenerateConfig
-		ConnectorFile  string
-		ObjectDir      string
-		Compiler       string
-		Ext            string
-		stubPath       string
-		buildPath      string
-		cmdConfig      string
-	)
-
-	cFlags := CFlags
-	lFlags := LFlags
-	postLibs := ""
-
+	var generateConfig GenerateConfig
 	err := json.Unmarshal([]byte(profile.AgentConfig), &generateConfig)
 	if err != nil {
 		return nil, "", err
-	}
-
-	// IAT Hiding: -nostdlib eliminates CRT, custom crt.cpp provides replacements
-	if generateConfig.IatHiding {
-		cFlags += " -DIAT_HIDING"
-		lFlags += " -nostdlib -nostartfiles -nodefaultlibs"
 	}
 
 	currentDir := ModuleDir
@@ -578,161 +559,390 @@ func (p *PluginAgent) BuildPayload(profile adaptix.BuildProfile, agentProfiles [
 	}
 
 	protocol, _ := listenerMap["protocol"].(string)
-	if protocol == "http" {
-		ObjectDir = ObjectDir_http
-		ConnectorFile = "ConnectorHTTP"
-	} else if protocol == "bind_smb" {
-		ObjectDir = ObjectDir_smb
-		ConnectorFile = "ConnectorSMB"
-	} else if protocol == "bind_tcp" {
-		ObjectDir = ObjectDir_tcp
-		ConnectorFile = "ConnectorTCP"
-	} else if protocol == "dns" {
-		ObjectDir = ObjectDir_dns
-		ConnectorFile = "ConnectorDNS"
-	} else {
-		return nil, "", errors.New("protocol unknown")
-	}
-	_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, fmt.Sprintf("Protocol: %s, Connector: %s", protocol, ConnectorFile))
+	_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, fmt.Sprintf("Protocol: %s", protocol))
 
-	if generateConfig.Arch == "x86" {
-		Compiler = "i686-w64-mingw32-g++"
-		Ext = ".x86.o"
-		stubPath = currentDir + "/" + ObjectDir + "/stub.x86.bin"
-		Filename = "agent.x86"
-	} else {
-		Compiler = "x86_64-w64-mingw32-g++"
-		Ext = ".x64.o"
-		stubPath = currentDir + "/" + ObjectDir + "/stub.x64.bin"
-		Filename = "agent.x64"
+	language := generateConfig.Language
+	if language == "" {
+		language = "C++"
 	}
-
-	svcName := ""
-	for _, char := range generateConfig.SvcName {
-		svcName += fmt.Sprintf("\\x%02x", char)
-	}
+	_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, fmt.Sprintf("Language: %s", language))
 
 	agentProfileSize := len(agentProfile) / 4
-	if generateConfig.Format == "Service Exe" {
-		cmdConfig = fmt.Sprintf("%s %s %s/config.cpp -DBUILD_SVC -DSERVICE_NAME='\"%s\"' -DPROFILE='\"%s\"' -DPROFILE_SIZE=%d -o %s/config.o", Compiler, cFlags, ObjectDir, svcName, string(agentProfile), agentProfileSize, tempDir)
-	} else {
-		cmdConfig = fmt.Sprintf("%s %s %s/config.cpp -DPROFILE='\"%s\"' -DPROFILE_SIZE=%d -o %s/config.o", Compiler, cFlags, ObjectDir, string(agentProfile), agentProfileSize, tempDir)
-	}
-	_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, "Compiling configuration...")
 
-	var buildArgsConfig []string
-	buildArgsConfig = append(buildArgsConfig, "-c", cmdConfig)
-	err = Ts.TsAgentBuildExecute(profile.BuilderId, currentDir, "sh", buildArgsConfig...)
-	if err != nil {
+	profileBytesComma := ""
+	for i := 0; i < len(agentProfile); i += 4 {
+		if i > 0 {
+			profileBytesComma += ", "
+		}
+		profileBytesComma += "0x" + string(agentProfile[i+2:i+4])
+	}
+
+	switch language {
+	case "C#":
+		if protocol != "http" {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", errors.New("C# beacon only supports HTTP protocol")
+		}
+		if generateConfig.Format != "Exe" {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", errors.New("C# beacon only supports Exe format")
+		}
+
+		_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, "Building C# beacon...")
+
+		srcFile := currentDir + "/src_beacon_csharp/Beacon.cs"
+		srcContent, err := os.ReadFile(srcFile)
+		if err != nil {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", fmt.Errorf("failed to read C# source: %v", err)
+		}
+
+		csCode := string(srcContent)
+		csCode = strings.Replace(csCode, "PROFILE_PLACEHOLDER", profileBytesComma, 1)
+		csCode = strings.Replace(csCode, "PROFILE_SIZE_PLACEHOLDER", fmt.Sprintf("%d", agentProfileSize), 1)
+
+		tmpSrc := tempDir + "/Beacon.cs"
+		err = os.WriteFile(tmpSrc, []byte(csCode), 0644)
+		if err != nil {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", err
+		}
+
+		Filename = "agent.exe"
+		buildPath := tempDir + "/agent.exe"
+		cmdBuild := fmt.Sprintf("mcs -out:%s -target:exe -optimize+ %s", buildPath, tmpSrc)
+
+		_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, "Compiling with mcs...")
+		var buildArgs []string
+		buildArgs = append(buildArgs, "-c", cmdBuild)
+		err = Ts.TsAgentBuildExecute(profile.BuilderId, currentDir, "sh", buildArgs...)
+		if err != nil {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", err
+		}
+
+		Payload, err = os.ReadFile(buildPath)
+		if err != nil {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", err
+		}
 		_ = os.RemoveAll(tempDir)
-		return nil, "", err
-	}
-	_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_SUCCESS, "Configuration compiled successfully")
 
-	Files := tempDir + "/config.o "
-	Files += ObjectDir + "/" + ConnectorFile + Ext + " "
-	for _, ofile := range ObjectFiles {
-		Files += ObjectDir + "/" + ofile + Ext + " "
-	}
-	if protocol == "dns" {
-		Files = appendDNSObjectFiles(Files, ObjectDir, Ext)
-	}
+	case "Go":
+		if protocol != "http" {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", errors.New("Go beacon only supports HTTP protocol")
+		}
+		if generateConfig.Format != "Exe" {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", errors.New("Go beacon only supports Exe format")
+		}
 
-	if generateConfig.Format == "Exe" {
-		Files += ObjectDir + "/main" + Ext
-		buildPath = tempDir + "/file.exe"
-		Filename += ".exe"
-		if generateConfig.IatHiding {
-			if generateConfig.Arch == "x86" {
-				lFlags += " -Wl,-e,_WinMain@16"
-			} else {
-				lFlags += " -Wl,-e,WinMain"
+		_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, "Building Go beacon...")
+
+		goSrcDir := currentDir + "/src_beacon_go"
+
+		goProfileBytes := ""
+		for i := 0; i < len(agentProfile); i += 4 {
+			if i > 0 {
+				goProfileBytes += ", "
 			}
+			goProfileBytes += "0x" + string(agentProfile[i+2:i+4])
 		}
-	} else if generateConfig.Format == "Service Exe" {
-		Files += ObjectDir + "/main_service" + Ext
-		buildPath = tempDir + "/svc.exe"
-		Filename = "svc_" + Filename + ".exe"
-		if generateConfig.IatHiding {
-			postLibs += " -ladvapi32"
-			if generateConfig.Arch == "x86" {
-				lFlags += " -Wl,-e,_main"
-			} else {
-				lFlags += " -Wl,-e,main"
-			}
+		config := fmt.Sprintf("package main\n\nvar profileData = []byte{%s}\nvar profileSize = %d\n", goProfileBytes, agentProfileSize)
+		configPath := goSrcDir + "/config.go"
+		err = os.WriteFile(configPath, []byte(config), 0644)
+		if err != nil {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", err
 		}
-	} else if generateConfig.Format == "DLL" {
-		Files += ObjectDir + "/main_dll" + Ext
-		lFlags += " -shared"
-		buildPath = tempDir + "/file.dll"
-		Filename += ".dll"
-		if generateConfig.IatHiding {
-			postLibs += " -lkernel32"
-			if generateConfig.Arch == "x86" {
-				lFlags += " -Wl,-e,_DllMain@12"
-			} else {
-				lFlags += " -Wl,-e,DllMain"
-			}
+
+		GoArch := "amd64"
+		if generateConfig.Arch == "x86" {
+			GoArch = "386"
 		}
-		if generateConfig.IsSideloading {
-			sideloadingContent, err := base64.StdEncoding.DecodeString(generateConfig.SideloadingContent)
-			if err != nil {
-				return nil, "", errors.New("unknown sideloading DLL format")
-			}
-			defPath, err := CreateDefinitionFile(sideloadingContent, tempDir)
-			if err != nil {
-				return nil, "", err
-			}
-			lFlags += " " + defPath
+
+		Filename = "agent.exe"
+		buildPath := tempDir + "/agent.exe"
+		LdFlags := "-s -w -H=windowsgui"
+		cmdBuild := fmt.Sprintf("GOWORK=off CGO_ENABLED=0 GOOS=windows GOARCH=%s go build -trimpath -ldflags=\"%s\" -o %s", GoArch, LdFlags, buildPath)
+
+		_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, fmt.Sprintf("Target: windows/%s", GoArch))
+		_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, "Starting build process...")
+		var buildArgs []string
+		buildArgs = append(buildArgs, "-c", cmdBuild)
+		err = Ts.TsAgentBuildExecute(profile.BuilderId, goSrcDir, "sh", buildArgs...)
+		if err != nil {
+			_ = os.RemoveAll(tempDir)
+			_ = os.WriteFile(configPath, []byte("package main\n\nvar profileData = []byte{}\nvar profileSize = 0\n"), 0644)
+			return nil, "", err
 		}
-	} else if generateConfig.Format == "Shellcode" {
-		Files += ObjectDir + "/main_shellcode" + Ext
-		lFlags += " -shared"
-		buildPath = tempDir + "/file.dll"
-		Filename += ".bin"
-		if generateConfig.IatHiding {
-			if generateConfig.Arch == "x86" {
-				lFlags += " -Wl,-e,_DllMain@12"
-			} else {
-				lFlags += " -Wl,-e,DllMain"
-			}
+
+		_ = os.WriteFile(configPath, []byte("package main\n\nvar profileData = []byte{}\nvar profileSize = 0\n"), 0644)
+
+		Payload, err = os.ReadFile(buildPath)
+		if err != nil {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", err
 		}
-	} else {
 		_ = os.RemoveAll(tempDir)
-		return nil, "", errors.New("unknown file format")
-	}
-	_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, fmt.Sprintf("Output format: %s, Filename: %s", generateConfig.Format, Filename))
-	_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, "Linking payload...")
 
-	var buildArgs []string
-	buildArgs = append(buildArgs, strings.Fields(lFlags)...)
-	buildArgs = append(buildArgs, strings.Fields(Files)...)
-	if postLibs != "" {
-		buildArgs = append(buildArgs, strings.Fields(postLibs)...)
-	}
-	buildArgs = append(buildArgs, "-o", buildPath)
+	case "Rust":
+		if protocol != "http" {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", errors.New("Rust beacon only supports HTTP protocol")
+		}
+		if generateConfig.Format != "Exe" {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", errors.New("Rust beacon only supports Exe format")
+		}
 
-	err = Ts.TsAgentBuildExecute(profile.BuilderId, currentDir, Compiler, buildArgs...)
-	if err != nil {
+		_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, "Building Rust beacon...")
+
+		rustSrcDir := currentDir + "/src_beacon_rust"
+		mainRsPath := rustSrcDir + "/src/main.rs"
+		mainRsContent, err := os.ReadFile(mainRsPath)
+		if err != nil {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", fmt.Errorf("failed to read Rust source: %v", err)
+		}
+
+		tmpRustDir := tempDir + "/rust_build"
+		err = os.MkdirAll(tmpRustDir+"/src", 0755)
+		if err != nil {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", err
+		}
+
+		cargoContent, err := os.ReadFile(rustSrcDir + "/Cargo.toml")
+		if err != nil {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", err
+		}
+		err = os.WriteFile(tmpRustDir+"/Cargo.toml", cargoContent, 0644)
+		if err != nil {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", err
+		}
+
+		rsCode := string(mainRsContent)
+		rsCode = strings.Replace(rsCode, "PROFILE_PLACEHOLDER", profileBytesComma, 1)
+		rsCode = strings.Replace(rsCode, "PROFILE_SIZE_PLACEHOLDER", fmt.Sprintf("%d", agentProfileSize), 1)
+		err = os.WriteFile(tmpRustDir+"/src/main.rs", []byte(rsCode), 0644)
+		if err != nil {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", err
+		}
+
+		rustTarget := "x86_64-pc-windows-gnu"
+		if generateConfig.Arch == "x86" {
+			rustTarget = "i686-pc-windows-gnu"
+		}
+
+		Filename = "agent.exe"
+		cmdBuild := fmt.Sprintf("cargo build --release --target %s", rustTarget)
+
+		_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, fmt.Sprintf("Target: %s", rustTarget))
+		_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, "Starting build process...")
+		var buildArgs []string
+		buildArgs = append(buildArgs, "-c", cmdBuild)
+		err = Ts.TsAgentBuildExecute(profile.BuilderId, tmpRustDir, "sh", buildArgs...)
+		if err != nil {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", err
+		}
+
+		buildPath := tmpRustDir + "/target/" + rustTarget + "/release/beacon.exe"
+		Payload, err = os.ReadFile(buildPath)
+		if err != nil {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", err
+		}
 		_ = os.RemoveAll(tempDir)
-		return nil, "", err
-	}
 
-	buildContent, err := os.ReadFile(buildPath)
-	if err != nil {
-		return nil, "", err
-	}
-	_ = os.RemoveAll(tempDir)
+	default:
+		if protocol == "http" {
+			// ObjectDir already set below
+		} else if protocol != "bind_smb" && protocol != "bind_tcp" && protocol != "dns" {
+			return nil, "", errors.New("protocol unknown")
+		}
 
-	if generateConfig.Format == "Shellcode" {
-		stubContent, err := os.ReadFile(stubPath)
+		var (
+			ConnectorFile string
+			ObjectDir     string
+			Compiler      string
+			Ext           string
+			stubPath      string
+			buildPath     string
+			cmdConfig     string
+		)
+
+		cFlags := CFlags
+		lFlags := LFlags
+		postLibs := ""
+
+		if generateConfig.IatHiding {
+			cFlags += " -DIAT_HIDING"
+			lFlags += " -nostdlib -nostartfiles -nodefaultlibs"
+		}
+
+		if protocol == "http" {
+			ObjectDir = ObjectDir_http
+			ConnectorFile = "ConnectorHTTP"
+		} else if protocol == "bind_smb" {
+			ObjectDir = ObjectDir_smb
+			ConnectorFile = "ConnectorSMB"
+		} else if protocol == "bind_tcp" {
+			ObjectDir = ObjectDir_tcp
+			ConnectorFile = "ConnectorTCP"
+		} else if protocol == "dns" {
+			ObjectDir = ObjectDir_dns
+			ConnectorFile = "ConnectorDNS"
+		} else {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", errors.New("protocol unknown")
+		}
+		_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, fmt.Sprintf("Connector: %s", ConnectorFile))
+
+		if generateConfig.Arch == "x86" {
+			Compiler = "i686-w64-mingw32-g++"
+			Ext = ".x86.o"
+			stubPath = currentDir + "/" + ObjectDir + "/stub.x86.bin"
+			Filename = "agent.x86"
+		} else {
+			Compiler = "x86_64-w64-mingw32-g++"
+			Ext = ".x64.o"
+			stubPath = currentDir + "/" + ObjectDir + "/stub.x64.bin"
+			Filename = "agent.x64"
+		}
+
+		svcName := ""
+		for _, char := range generateConfig.SvcName {
+			svcName += fmt.Sprintf("\\x%02x", char)
+		}
+
+		if generateConfig.Format == "Service Exe" {
+			cmdConfig = fmt.Sprintf("%s %s %s/config.cpp -DBUILD_SVC -DSERVICE_NAME='\"%s\"' -DPROFILE='\"%s\"' -DPROFILE_SIZE=%d -o %s/config.o", Compiler, cFlags, ObjectDir, svcName, string(agentProfile), agentProfileSize, tempDir)
+		} else {
+			cmdConfig = fmt.Sprintf("%s %s %s/config.cpp -DPROFILE='\"%s\"' -DPROFILE_SIZE=%d -o %s/config.o", Compiler, cFlags, ObjectDir, string(agentProfile), agentProfileSize, tempDir)
+		}
+		_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, "Compiling configuration...")
+
+		var buildArgsConfig []string
+		buildArgsConfig = append(buildArgsConfig, "-c", cmdConfig)
+		err = Ts.TsAgentBuildExecute(profile.BuilderId, currentDir, "sh", buildArgsConfig...)
+		if err != nil {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", err
+		}
+		_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_SUCCESS, "Configuration compiled successfully")
+
+		Files := tempDir + "/config.o "
+		Files += ObjectDir + "/" + ConnectorFile + Ext + " "
+		for _, ofile := range ObjectFiles {
+			Files += ObjectDir + "/" + ofile + Ext + " "
+		}
+		if protocol == "dns" {
+			Files = appendDNSObjectFiles(Files, ObjectDir, Ext)
+		}
+
+		if generateConfig.Format == "Exe" {
+			Files += ObjectDir + "/main" + Ext
+			buildPath = tempDir + "/file.exe"
+			Filename += ".exe"
+			if generateConfig.IatHiding {
+				if generateConfig.Arch == "x86" {
+					lFlags += " -Wl,-e,_WinMain@16"
+				} else {
+					lFlags += " -Wl,-e,WinMain"
+				}
+			}
+		} else if generateConfig.Format == "Service Exe" {
+			Files += ObjectDir + "/main_service" + Ext
+			buildPath = tempDir + "/svc.exe"
+			Filename = "svc_" + Filename + ".exe"
+			if generateConfig.IatHiding {
+				postLibs += " -ladvapi32"
+				if generateConfig.Arch == "x86" {
+					lFlags += " -Wl,-e,_main"
+				} else {
+					lFlags += " -Wl,-e,main"
+				}
+			}
+		} else if generateConfig.Format == "DLL" {
+			Files += ObjectDir + "/main_dll" + Ext
+			lFlags += " -shared"
+			buildPath = tempDir + "/file.dll"
+			Filename += ".dll"
+			if generateConfig.IatHiding {
+				postLibs += " -lkernel32"
+				if generateConfig.Arch == "x86" {
+					lFlags += " -Wl,-e,_DllMain@12"
+				} else {
+					lFlags += " -Wl,-e,DllMain"
+				}
+			}
+			if generateConfig.IsSideloading {
+				sideloadingContent, err := base64.StdEncoding.DecodeString(generateConfig.SideloadingContent)
+				if err != nil {
+					return nil, "", errors.New("unknown sideloading DLL format")
+				}
+				defPath, err := CreateDefinitionFile(sideloadingContent, tempDir)
+				if err != nil {
+					return nil, "", err
+				}
+				lFlags += " " + defPath
+			}
+		} else if generateConfig.Format == "Shellcode" {
+			Files += ObjectDir + "/main_shellcode" + Ext
+			lFlags += " -shared"
+			buildPath = tempDir + "/file.dll"
+			Filename += ".bin"
+			if generateConfig.IatHiding {
+				if generateConfig.Arch == "x86" {
+					lFlags += " -Wl,-e,_DllMain@12"
+				} else {
+					lFlags += " -Wl,-e,DllMain"
+				}
+			}
+		} else {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", errors.New("unknown file format")
+		}
+		_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, fmt.Sprintf("Output format: %s, Filename: %s", generateConfig.Format, Filename))
+		_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, "Linking payload...")
+
+		var buildArgs []string
+		buildArgs = append(buildArgs, strings.Fields(lFlags)...)
+		buildArgs = append(buildArgs, strings.Fields(Files)...)
+		if postLibs != "" {
+			buildArgs = append(buildArgs, strings.Fields(postLibs)...)
+		}
+		buildArgs = append(buildArgs, "-o", buildPath)
+
+		err = Ts.TsAgentBuildExecute(profile.BuilderId, currentDir, Compiler, buildArgs...)
+		if err != nil {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", err
+		}
+
+		buildContent, err := os.ReadFile(buildPath)
 		if err != nil {
 			return nil, "", err
 		}
-		Payload = append(stubContent, buildContent...)
-	} else {
-		Payload = buildContent
+		_ = os.RemoveAll(tempDir)
+
+		if generateConfig.Format == "Shellcode" {
+			stubContent, err := os.ReadFile(stubPath)
+			if err != nil {
+				return nil, "", err
+			}
+			Payload = append(stubContent, buildContent...)
+		} else {
+			Payload = buildContent
+		}
 	}
+
 	_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, fmt.Sprintf("Payload size: %d bytes", len(Payload)))
 
 	/// END CODE HERE
