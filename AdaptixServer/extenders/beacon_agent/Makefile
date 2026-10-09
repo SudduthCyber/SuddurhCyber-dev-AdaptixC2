@@ -13,5 +13,11 @@ all: clean
 	@ mv src_beacon/objects_dns ./dist/objects_dns
 	@ echo "      done..."
 
+	@ echo "    * Copying multi-language beacon sources"
+	@ cp -r src_beacon_csharp ./dist/src_beacon_csharp
+	@ cp -r src_beacon_go ./dist/src_beacon_go
+	@ cp -r src_beacon_rust ./dist/src_beacon_rust
+	@ echo "      done..."
+
 clean:
 	@ rm -rf dist
