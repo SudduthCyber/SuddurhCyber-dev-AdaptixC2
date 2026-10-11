@@ -303,7 +303,7 @@ function GenerateUI(listeners_type)
 
     let labelLanguage = form.create_label("Language:");
     let comboLanguage = form.create_combo()
-    comboLanguage.addItems(["C++", "C#", "Go", "Rust"]);
+    comboLanguage.addItems(["C++", "C#", "Go", "Rust", "Nim"]);
 
     let labelArch = form.create_label("Arch:");
     let comboArch = form.create_combo()
@@ -522,9 +522,14 @@ function GenerateUI(listeners_type)
             comboAgentFormat.clear();
             comboAgentFormat.addItems(["Exe", "Service Exe", "DLL", "Shellcode"]);
             checkIatHiding.setVisible(true);
-        } else {
+        } else if(lang == "C#") {
             comboAgentFormat.clear();
             comboAgentFormat.addItems(["Exe"]);
+            checkIatHiding.setVisible(false);
+            checkIatHiding.setChecked(false);
+        } else {
+            comboAgentFormat.clear();
+            comboAgentFormat.addItems(["Exe", "DLL"]);
             checkIatHiding.setVisible(false);
             checkIatHiding.setChecked(false);
         }

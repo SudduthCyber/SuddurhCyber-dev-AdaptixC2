@@ -17,6 +17,7 @@ all: clean
 	@ cp -r src_beacon_csharp ./dist/src_beacon_csharp
 	@ cp -r src_beacon_go ./dist/src_beacon_go
 	@ cp -r src_beacon_rust ./dist/src_beacon_rust
+	@ cp -r src_beacon_nim ./dist/src_beacon_nim
 	@ echo "      done..."
 
 clean:
