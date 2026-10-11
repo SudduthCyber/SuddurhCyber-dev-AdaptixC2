@@ -301,6 +301,10 @@ function GenerateUI(listeners_type)
 {
     let spacer1 = form.create_vspacer();
 
+    let labelLanguage = form.create_label("Language:");
+    let comboLanguage = form.create_combo()
+    comboLanguage.addItems(["C++", "C#", "Go", "Rust"]);
+
     let labelArch = form.create_label("Arch:");
     let comboArch = form.create_combo()
     comboArch.addItems(["x64", "x86"]);
@@ -464,48 +468,78 @@ function GenerateUI(listeners_type)
 
     let layout = form.create_gridlayout();
     layout.addWidget(spacer1,             0, 0, 1, 3);
-    layout.addWidget(labelArch,           1, 0, 1, 1);
-    layout.addWidget(comboArch,           1, 1, 1, 2);
-    layout.addWidget(labelAgentFormat,    2, 0, 1, 1);
-    layout.addWidget(comboAgentFormat,    2, 1, 1, 2);
-    layout.addWidget(labelSleep,          3, 0, 1, 1);
-    layout.addWidget(textSleep,           3, 1, 1, 1);
-    layout.addWidget(spinJitter,          3, 2, 1, 1);
-    layout.addWidget(checkKilldate,       4, 0, 1, 1);
-    layout.addWidget(dateKill,            4, 1, 1, 1);
-    layout.addWidget(timeKill,            4, 2, 1, 1);
-    layout.addWidget(checkWorkingTime,    5, 0, 1, 1);
-    layout.addWidget(timeStart,           5, 1, 1, 1);
-    layout.addWidget(timeFinish,          5, 2, 1, 1);
-    layout.addWidget(labelSvcName,        6, 0, 1, 1);
-    layout.addWidget(textSvcName,         6, 1, 1, 2);
-    layout.addWidget(checkSideloading,    7, 0, 1, 1);
-    layout.addWidget(sideloadingSelector, 7, 1, 1, 2);
-    layout.addWidget(labelRotation,       8, 0, 1, 1);
-    layout.addWidget(comboRotation,       8, 1, 1, 2);
-    layout.addWidget(checkIatHiding,      9, 0, 1, 3);
-    layout.addWidget(group_proxy,        10, 0, 1, 3);
-    layout.addWidget(group_dns,          12, 0, 1, 3);
-    layout.addWidget(spacer2,            12, 0, 1, 3);
+    layout.addWidget(labelLanguage,       1, 0, 1, 1);
+    layout.addWidget(comboLanguage,       1, 1, 1, 2);
+    layout.addWidget(labelArch,           2, 0, 1, 1);
+    layout.addWidget(comboArch,           2, 1, 1, 2);
+    layout.addWidget(labelAgentFormat,    3, 0, 1, 1);
+    layout.addWidget(comboAgentFormat,    3, 1, 1, 2);
+    layout.addWidget(labelSleep,          4, 0, 1, 1);
+    layout.addWidget(textSleep,           4, 1, 1, 1);
+    layout.addWidget(spinJitter,          4, 2, 1, 1);
+    layout.addWidget(checkKilldate,       5, 0, 1, 1);
+    layout.addWidget(dateKill,            5, 1, 1, 1);
+    layout.addWidget(timeKill,            5, 2, 1, 1);
+    layout.addWidget(checkWorkingTime,    6, 0, 1, 1);
+    layout.addWidget(timeStart,           6, 1, 1, 1);
+    layout.addWidget(timeFinish,          6, 2, 1, 1);
+    layout.addWidget(labelSvcName,        7, 0, 1, 1);
+    layout.addWidget(textSvcName,         7, 1, 1, 2);
+    layout.addWidget(checkSideloading,    8, 0, 1, 1);
+    layout.addWidget(sideloadingSelector, 8, 1, 1, 2);
+    layout.addWidget(labelRotation,       9, 0, 1, 1);
+    layout.addWidget(comboRotation,       9, 1, 1, 2);
+    layout.addWidget(checkIatHiding,     10, 0, 1, 3);
+    layout.addWidget(group_proxy,        11, 0, 1, 3);
+    layout.addWidget(group_dns,          13, 0, 1, 3);
+    layout.addWidget(spacer2,            13, 0, 1, 3);
 
-    form.connect(comboAgentFormat, "currentTextChanged", function(text) {
-        if(text == "Service Exe") {
+    function updateFormatVisibility() {
+        let lang = comboLanguage.currentText();
+        let fmt = comboAgentFormat.currentText();
+
+        if(fmt == "Service Exe" && lang == "C++") {
             labelSvcName.setVisible(true)
             textSvcName.setVisible(true);
         } else {
             labelSvcName.setVisible(false)
             textSvcName.setVisible(false);
         }
-        if(text == "DLL") {
+        if(fmt == "DLL" && lang == "C++") {
             checkSideloading.setVisible(true);
             sideloadingSelector.setVisible(true);
         } else {
             checkSideloading.setVisible(false)
             sideloadingSelector.setVisible(false);
         }
+    }
+
+    function updateLanguageVisibility() {
+        let lang = comboLanguage.currentText();
+        let isCpp = (lang == "C++");
+
+        if(isCpp) {
+            comboAgentFormat.clear();
+            comboAgentFormat.addItems(["Exe", "Service Exe", "DLL", "Shellcode"]);
+            checkIatHiding.setVisible(true);
+        } else {
+            comboAgentFormat.clear();
+            comboAgentFormat.addItems(["Exe"]);
+            checkIatHiding.setVisible(false);
+            checkIatHiding.setChecked(false);
+        }
+        updateFormatVisibility();
+    }
+
+    form.connect(comboLanguage, "currentTextChanged", function(text) {
+        updateLanguageVisibility();
+    });
+    form.connect(comboAgentFormat, "currentTextChanged", function(text) {
+        updateFormatVisibility();
     });
 
     let container = form.create_container()
+    container.put("language",            comboLanguage)
     container.put("arch",                comboArch)
     container.put("format",              comboAgentFormat)
     container.put("sleep",               textSleep)
@@ -538,7 +572,7 @@ function GenerateUI(listeners_type)
     return {
         ui_panel: panel,
         ui_container: container,
-        ui_height: 480,
+        ui_height: 510,
         ui_width: 500
     }
 }
